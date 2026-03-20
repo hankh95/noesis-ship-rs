@@ -9,7 +9,7 @@ Rust NATS communication platform for multi-agent AI systems.
 
 ## Features
 
-**Six building blocks** over [NATS](https://nats.io):
+**Seven building blocks** over [NATS](https://nats.io):
 
 | Primitive | Transport | Use Case |
 |-----------|-----------|----------|
@@ -18,6 +18,7 @@ Rust NATS communication platform for multi-agent AI systems.
 | **Channels** | JetStream | Point-to-point messaging with history |
 | **KV Store** | NATS KV | Shared state with watch, TTL, history |
 | **Object Store** | NATS Object Store | Large blob storage with SHA-256 |
+| **JobQueue** | In-memory (NATS KV planned) | Generic job lifecycle (queued → running → complete/failed) |
 | **NatsServiceBuilder** | NATS Core | Build a request-reply service in ~20 lines |
 
 Add to your `Cargo.toml`:
@@ -224,6 +225,47 @@ let arts = ArtifactStore::new(NatsConfig::default());
 arts.connect().await?;
 arts.store_artifact("report.html", &html_bytes, "report", Some("EX-3001")).await?;
 ```
+
+## JobQueue — Generic Job Lifecycle
+
+Track work items through `queued → running → complete | failed`. Workers claim
+jobs atomically (filtered by worker name). Any serde-able payload type works.
+
+```rust
+use noesis_ship::job_queue::{JobQueue, JobStatus};
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BuildJob {
+    repo: String,
+    branch: String,
+}
+
+let mut queue = JobQueue::<BuildJob>::new("BUILD");
+
+// Submit a job targeted at a specific worker
+let id = queue.submit(
+    BuildJob { repo: "myapp".into(), branch: "main".into() },
+    "ci-server",   // target worker
+    "developer-1", // queued by
+);
+
+// Worker claims next available job
+let job = queue.claim("ci-server").unwrap();
+let job_id = job.id.clone();
+
+// Complete with result (or fail with error)
+queue.complete(&job_id, serde_json::json!({"artifact": "build/out.tar"}));
+// queue.fail(&job_id, "compilation error");
+
+// List and filter
+let queued = queue.list(Some(&JobStatus::Queued));
+let (q, r, c, f) = queue.counts();
+```
+
+**Real-world usage:** NuSy's training queue uses `JobQueue<TrainingPayload>` to
+coordinate GPU training runs across a fleet of machines — any agent queues jobs,
+DGX claims and executes them.
 
 ## NatsServiceBuilder — Request-Reply Services
 
